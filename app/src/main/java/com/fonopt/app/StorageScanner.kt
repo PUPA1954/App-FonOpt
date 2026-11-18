@@ -2,8 +2,10 @@ package com.fonopt.app
 
 import android.app.AppOpsManager
 import android.app.usage.StorageStatsManager
+import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.os.Build
 import android.os.Process
 import android.os.storage.StorageManager
@@ -22,6 +24,9 @@ data class AppStorage(
     val appBytes: Long,
     val dataBytes: Long,
     val cacheBytes: Long,
+    /** Última vez que se usó (ms desde 1970). 0 = sin uso en la ventana consultada. */
+    val lastUsedMillis: Long = 0L,
+    val isSystem: Boolean = false,
 ) {
     val totalBytes: Long get() = appBytes + dataBytes + cacheBytes
 }
@@ -57,11 +62,22 @@ object StorageScanner {
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
-    /** Las [limit] apps que más espacio ocupan. Requiere acceso a uso. */
-    fun topApps(context: Context, limit: Int = 10): List<AppStorage> {
+    /** Días de historial de uso que consultamos. */
+    const val USAGE_WINDOW_DAYS = 90
+
+    /** Días sin abrir una app para considerarla candidata a desinstalar. */
+    const val UNUSED_AFTER_DAYS = 30
+
+    /** Todas las apps con icono de lanzador, con su tamaño y último uso. Requiere acceso a uso. */
+    fun scanApps(context: Context): List<AppStorage> {
         val pm = context.packageManager
         val statsManager = context.getSystemService(StorageStatsManager::class.java)
+        val usageManager = context.getSystemService(UsageStatsManager::class.java)
         val user = Process.myUserHandle()
+
+        val now = System.currentTimeMillis()
+        val windowStart = now - USAGE_WINDOW_DAYS * DAY_MS
+        val usage = usageManager.queryAndAggregateUsageStats(windowStart, now)
 
         val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         @Suppress("DEPRECATION")
@@ -71,17 +87,41 @@ object StorageScanner {
 
         return packages.mapNotNull { pkg ->
             try {
+                val info = pm.getApplicationInfo(pkg, 0)
                 val s = statsManager.queryStatsForPackage(StorageManager.UUID_DEFAULT, pkg, user)
+                val lastUsed = usage[pkg]?.lastTimeUsed ?: 0L
                 AppStorage(
-                    label = pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString(),
+                    label = pm.getApplicationLabel(info).toString(),
                     packageName = pkg,
                     appBytes = s.appBytes,
                     dataBytes = s.dataBytes,
                     cacheBytes = s.cacheBytes,
+                    // Si el sistema no tiene registro dentro de la ventana, queda en 0.
+                    lastUsedMillis = if (lastUsed >= windowStart) lastUsed else 0L,
+                    isSystem = info.flags and ApplicationInfo.FLAG_SYSTEM != 0,
                 )
             } catch (e: Exception) {
                 null // app sin datos accesibles: la saltamos
             }
-        }.sortedByDescending { it.totalBytes }.take(limit)
+        }
     }
+
+    /** Las [limit] apps que más espacio ocupan. */
+    fun topApps(apps: List<AppStorage>, limit: Int = 10): List<AppStorage> =
+        apps.sortedByDescending { it.totalBytes }.take(limit)
+
+    /**
+     * Apps instaladas por el usuario que llevan [UNUSED_AFTER_DAYS] días sin abrirse,
+     * ordenadas de más a menos espacio (así lo que más libera aparece primero).
+     */
+    fun unusedApps(context: Context, apps: List<AppStorage>, limit: Int = 15): List<AppStorage> {
+        val cutoff = System.currentTimeMillis() - UNUSED_AFTER_DAYS * DAY_MS
+        return apps
+            .filter { !it.isSystem && it.packageName != context.packageName }
+            .filter { it.lastUsedMillis < cutoff }
+            .sortedByDescending { it.totalBytes }
+            .take(limit)
+    }
+
+    private const val DAY_MS = 24L * 60 * 60 * 1000
 }

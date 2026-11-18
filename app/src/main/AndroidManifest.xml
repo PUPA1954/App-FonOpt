@@ -7,6 +7,9 @@
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
 
+    <!-- Permite abrir el diálogo del sistema para desinstalar (el usuario siempre confirma). -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
     <!-- Para ver las apps con icono de lanzador sin pedir QUERY_ALL_PACKAGES. -->
     <queries>
         <intent>

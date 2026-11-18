@@ -2,6 +2,7 @@ package com.fonopt.app
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.provider.Settings
 import android.os.Bundle
 import android.text.format.Formatter
@@ -68,6 +69,7 @@ private fun StorageScreen(refreshKey: Int) {
     var summary by remember { mutableStateOf<StorageSummary?>(null) }
     var hasAccess by remember { mutableStateOf(false) }
     var apps by remember { mutableStateOf<List<AppStorage>>(emptyList()) }
+    var unused by remember { mutableStateOf<List<AppStorage>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
 
     LaunchedEffect(refreshKey) {
@@ -75,7 +77,9 @@ private fun StorageScreen(refreshKey: Int) {
         withContext(Dispatchers.IO) {
             summary = StorageScanner.summary(context)
             hasAccess = StorageScanner.hasUsageAccess(context)
-            apps = if (hasAccess) StorageScanner.topApps(context) else emptyList()
+            val all = if (hasAccess) StorageScanner.scanApps(context) else emptyList()
+            apps = StorageScanner.topApps(all)
+            unused = StorageScanner.unusedApps(context, all)
         }
         loading = false
     }
@@ -160,6 +164,51 @@ private fun StorageScreen(refreshKey: Int) {
                     }
                 }
             }
+
+            item {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Apps que podrías desinstalar",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    "Llevan más de ${StorageScanner.UNUSED_AFTER_DAYS} días sin abrirse " +
+                        "(historial de los últimos ${StorageScanner.USAGE_WINDOW_DAYS} días). " +
+                        "Ordenadas por el espacio que liberarías.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (unused.isEmpty() && !loading) {
+                item { Text("No encontré apps sin uso. ¡Bien!") }
+            }
+            items(unused, key = { "unused-" + it.packageName }) { app ->
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(app.label, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "${lastUsedText(app.lastUsedMillis)} · Liberarías " +
+                                    size(context, app.totalBytes),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Button(onClick = {
+                            context.startActivity(
+                                Intent(Intent.ACTION_DELETE, Uri.parse("package:${app.packageName}")),
+                            )
+                        }) { Text("Desinstalar") }
+                    }
+                }
+            }
         }
     }
+}
+
+private fun lastUsedText(lastUsedMillis: Long): String {
+    if (lastUsedMillis <= 0L) return "Sin uso en ${StorageScanner.USAGE_WINDOW_DAYS}+ días"
+    val days = (System.currentTimeMillis() - lastUsedMillis) / (24L * 60 * 60 * 1000)
+    return "Último uso: hace $days días"
 }
